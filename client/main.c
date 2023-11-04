@@ -22,7 +22,7 @@
 
 #define PASSWORD_SIZE 30
 #define USERNAME_SIZE 30
-#define DATA_MAX_SIZE 30
+#define DATA_MAX_SIZE 512
 #define RANDOM_SIZE   16
 #define VNP_PORT      8888
 #define MSS           1460
@@ -380,14 +380,25 @@ belongs_to_net (unsigned int net, unsigned int netmask, unsigned int addr) {
         return 1;
     return 0;
 }
+static int
+prefix (char *id) {
+
+    unsigned int n, m;
+    n   = from_ascii_to_int(id);
+    m   = 0;
+    for(; n>0; n=n>>1)
+        if (n & 1)
+            m++;
+    return m;
+}
 
 int
 main (int argc, char **argv) {
 
-    int cs, n;
+    int  cs, n;
     int  res;
     int  tun;
-    char dev [IFNAMSIZ];
+    char dev [] = "martina";
     struct Message msg;
 
     fd_set readfds;
@@ -397,10 +408,10 @@ main (int argc, char **argv) {
     unsigned int src;
     unsigned int dst;
 
-    char net     [] = "192.168.200.0";
-    char netmask [] = "255.255.255.0";
-    char ip      [] = "10.0.0.10";
-    char ipmask  [] = "255.255.255.0";
+    char rnet     [] = "192.168.200.0";
+    char rmask    [] = "255.255.255.0";
+    char ip      [INET_ADDRSTRLEN];
+    char mask    [INET_ADDRSTRLEN];
 
     char username  [PASSWORD_SIZE + 1];
     char password  [USERNAME_SIZE + 1];
@@ -413,7 +424,7 @@ main (int argc, char **argv) {
     fprintf (stdout, "Enter your password: ");
     fscanf  (stdin, "%s", password);
 
-    cs = connect_server ("127.0.0.1", VNP_PORT);
+    cs = connect_server ("10.0.0.2", VNP_PORT);
     if (cs < 0)
         exit(EXIT_FAILURE);
 
@@ -447,36 +458,44 @@ main (int argc, char **argv) {
     if(msg.cmd == FAILURE)
         goto invalid_password;
 
+    // Get IP address and netmask
+    sscanf(msg.data, "%s %s", ip, mask);
+
     // Setup TUN interface
     if((tun = tun_alloc(dev)) < 0)
         goto tun_error;
-    if((res = set_addr(dev, "10.0.0.10", 24)) < 0)
+    if((res = set_addr(dev, ip, prefix(mask))) < 0)
         goto tun_error_config;
     if((res = set_state(dev)) < 0)
         goto tun_error_config;
-    if((res = set_rtng(dev, "192.168.200.0", 24)) < 0)
-        goto tun_error_config;
+    if((res = set_rtng(dev, rnet, 24)) < 0)
+        goto tun_error_config; 
 
     printf("Client has been configured!\n");
 
-    FD_ZERO (&readfds);
-    FD_SET  (cs,  &readfds);
-    FD_SET  (tun, &readfds);
-    max = cs > tun ? cs : tun;
     for(;;) {
+
+        FD_ZERO (&readfds);
+        FD_SET  (cs,  &readfds);
+        FD_SET  (tun, &readfds);
+        max = cs > tun ? cs : tun;
 
         res = select(max + 1, &readfds, NULL, NULL, NULL);
         if (FD_ISSET(tun, &readfds)) { // Receiving traffic from TUN interface
-
             n = read (tun, (void*) &buf, MSS);
             if(is_ipv4(buf)) { // If it is an IPv4 packet
                 dst = ntohl(*(unsigned int*)(buf + 16));
-                if(belongs_to_net(from_ascii_to_int(net), from_ascii_to_int(netmask), dst))
+                if(belongs_to_net(from_ascii_to_int(rnet), from_ascii_to_int(rmask), dst))
                     write (cs, (const void*) buf, n); // Send to the VPN server
 
             }
-        } else { // Receiving traffic from VPN server
-
+        }
+        if (FD_ISSET(cs, &readfds)) { // Receiving traffic from VPN server
+            n = read (cs, (void*) &buf, MSS);
+            if(is_ipv4(buf)) { // If it is an IPv4 packet
+                src = ntohl(*(unsigned int*)(buf + 12));
+                write (tun, (const void*) buf, n); // Send to the TUN interface
+            }
         }
     }
 
