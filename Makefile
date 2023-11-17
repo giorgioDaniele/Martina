@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS =  -g
+CFLAGS =  -g -Wall
 CLIENT_OBJ_FILES = client/main.o
 SERVER_OBJ_FILES = server/main.o
 

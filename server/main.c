@@ -46,72 +46,80 @@
     ((fst << 24) + (snd << 16) + (thd << 8) + (fth))
 
 enum Command {
-    USERNAME, CHALLENGE, RESPONSE, FAILURE, SUCCESS
+    USERNAME, 
+    CHALLENGE, 
+    RESPONSE, 
+    FAILURE, 
+    SUCCESS
 };
+
 struct Message {
     enum Command cmd;
     char data [DATA_MAX_SIZE + 1];
 };
+
 struct Connection {
     int cs;
     struct sockaddr_in cin;
 };
 
+
+typedef struct Connection  Con_t;
+typedef struct sockaddr_in Skt_t;
+typedef struct Message     Msg_t;
+typedef unsigned int       IP_t;
+typedef char*              AD_t;
+typedef fd_set Set_t;
+
 static int 
-init_fds (struct Connection *cconn, int max, fd_set * readfds) {
+init_fds (
+    Con_t  *ccon,   // Client Connection object
+    int     maxc,   // Clients at most
+    Set_t  *rfds) { // Set of readers 
 
-    int i;
-    int cs;
-    int new_max;
+    int cskt;
+    int nmax;
 
-    new_max = max;
-    for(i=0; i<MAX_CLIENTS; i++) {
-        cs = cconn[i].cs;
-        if(cs > 0)
-            FD_SET(cs, readfds);
-        if(cs > max) 
-            new_max = cs;
+    nmax = maxc;
+    for(int i=0; i<MAX_CLIENTS; i++) {
+        cskt = ccon[i].cs;
+        if(cskt > 0)
+            FD_SET(cskt, rfds);
+        if(cskt > maxc) 
+            nmax = cskt;
     }
-    return new_max;
+    return nmax;
 }
-static void
-regst_cs (struct Connection *ccon, struct sockaddr_in cin, int cs) {
 
-    int i;
+static void 
+regst_cs (
+    Con_t  *ccon,   // Client Connection object
+    Skt_t   cskt,   // Client socket object
+    int     cdes) { // Client socket descriptor
 
-    for (i=0; i<MAX_CLIENTS; i++) {
+    for (int i=0; i<MAX_CLIENTS; i++) {
         if(ccon[i].cs == 0)  {
-            ccon[i].cs  = cs; 
-            ccon[i].cin = cin;
+            ccon[i].cs  = cdes; 
+            ccon[i].cin = cskt;
             break;
         }
     }
     return;
 }
 
-static void
-dump_hex_message (const char * buf, int size) {
-
-    for(int i=0; i<size; i++) {
-        printf("0x%02x ", (unsigned char) buf[i]);
-        if(i % 12 == 0 && i) {
-            printf("\n");
-        }
-    }
-    printf("\n");
-    return;
-}
-static int
-start_service (int port) {
+static int 
+start (
+    int port) { // Port number the server listens at
 
     int s, n;
-    struct sockaddr_in sin;
 
-    ZERO (&sin, sizeof (sin));
-    sin.sin_family = AF_INET;
-    sin.sin_port   = htons (port);
+    Skt_t sskt;
 
-    sin.sin_addr.s_addr = htonl (INADDR_ANY);
+    ZERO (&sskt, sizeof (sskt));
+    sskt.sin_family = AF_INET;
+    sskt.sin_port   = htons (port);
+
+    sskt.sin_addr.s_addr = htonl (INADDR_ANY);
     s = socket (AF_INET, SOCK_STREAM, 0);
 
     if (s < 0)
@@ -119,14 +127,14 @@ start_service (int port) {
     n = 1;
     if (setsockopt (s, SOL_SOCKET, SO_REUSEADDR, (char *)&n, sizeof (n)) < 0) 
         goto sock_options;
-    if (bind (s, (struct sockaddr *) &sin, sizeof (sin)) < 0)
+    if (bind (s, (struct sockaddr *) &sskt, sizeof (sskt)) < 0)
         goto sock_binding;
     if (listen (s, 5) < 0) 
         goto sock_listening;
 
     fprintf(stdout, "[+] Service is up and running\n");
-    fprintf(stdout, "    Local Address: %s\n", inet_ntoa(sin.sin_addr));
-    fprintf(stdout, "    Port:          %u\n\n", ntohs(sin.sin_port));
+    fprintf(stdout, "    Local Address: %s\n",   inet_ntoa(sskt.sin_addr));
+    fprintf(stdout, "    Port:          %u\n\n", ntohs(sskt.sin_port));
     return s;
 
 sock_creation:
@@ -146,84 +154,87 @@ sock_listening:
     return -1;
 
 }   
-static int
-client_authentication (int cs, struct Connection *cconn) {
 
-    FILE  *file;
-    int    n;
-    int    found;
+static int 
+auth (
+    int    cdes,     // Client socket descriptor
+    Con_t *cconn) {  // Client soscket object
 
-    struct sockaddr_in cin;
-    struct Message msg;
+    FILE  *fdes;
+    int    fnd;
 
-    char buffer   [USERNAME_SIZE + PASSWORD_SIZE + RANDOM_SIZE];
-    char username [PASSWORD_SIZE + 1];
-    char password [USERNAME_SIZE + 1];
+    Skt_t cin;
+    Msg_t msg;
 
-    ZERO(username, PASSWORD_SIZE + 1);
-    ZERO(password, PASSWORD_SIZE + 1);
+    char buf   [USERNAME_SIZE + PASSWORD_SIZE + RANDOM_SIZE];
+    char usr   [PASSWORD_SIZE + 1];
+    char pwd   [USERNAME_SIZE + 1];
+    char rnd   [  ] = "ABCDABCDABCDABCD";
+    char dgt   [SHA256_DIGEST_LENGTH];
+
+    char  cadd [INET_ADDRSTRLEN];
+    char  cmsk [INET_ADDRSTRLEN];
+
+    ZERO(usr, PASSWORD_SIZE + 1);
+    ZERO(pwd, PASSWORD_SIZE + 1);
     
-    char  random   [  ] = "ABCDABCDABCDABCD";
-    char  digest   [SHA256_DIGEST_LENGTH];
-
-    char  cip  [INET_ADDRSTRLEN];
-    char  mask [INET_ADDRSTRLEN];
 
     // Receive username
     ZERO(&msg, sizeof(struct Message));
-    if (read (cs, (void*) &msg, sizeof(msg.cmd) + DATA_MAX_SIZE + 1) == 0)
+    if (read (cdes, (void*) &msg, sizeof(msg.cmd) + DATA_MAX_SIZE + 1) == 0)
         goto disconneted;
 
     // Search username
-    if((file = fopen("server/users.dat", "r")) == NULL)
+    if((fdes = fopen("server/users.dat", "r")) == NULL)
         goto io_err;
     
 
-    found = 0;
-    while (fscanf(file, "%s %s\n", username, password) == 2) {
-        if(strcmp(msg.data, username) == 0) {
-            found = 1;
+    fnd = 0;
+    while (fscanf(fdes, "%s %s\n", usr, pwd) == 2) {
+        if(strcmp(msg.data, usr) == 0) {
+            fnd = 1;
             break;
         }
     }
-    fclose(file);
-    if(!found) 
+    fclose(fdes);
+
+    if(!fnd) 
         goto failure;   
     
     // Looup for an IP
-    if((file = fopen("server/ips.dat", "r")) == NULL)
+    if((fdes = fopen("server/ips.dat", "r")) == NULL)
         goto io_err;
-        found = 0;
-    found = 1;
-    while (fscanf(file, "%s %s %d\n", cip, mask, &found) == 3) {
-        if(found)
+    
+    fnd = 0;
+    while (fscanf(fdes, "%s %s %d\n", cadd, cmsk, &fnd) == 3) {
+        if(fnd)
             break;
     }
-    fclose(file);
-    if(!found) 
+    fclose(fdes);
+    if(!fnd) 
         goto failure;
 
-    ZERO    (buffer, USERNAME_SIZE + PASSWORD_SIZE + RANDOM_SIZE);
-    MOVE    (buffer, username, strlen(username), 0x00);
-    MOVE    (buffer, password, strlen(password), strlen(username));
-    MOVE    (buffer, random,   strlen(random),   strlen(username) + strlen(password));
-    SHA256  (buffer, strlen(username) + strlen(password) + strlen(random), digest);   // SHA256 ([username | password | random])
+    ZERO    (buf, USERNAME_SIZE + PASSWORD_SIZE + RANDOM_SIZE);
+    MOVE    (buf, usr, strlen(usr), 0x00);
+    MOVE    (buf, pwd, strlen(pwd), strlen(usr));
+    MOVE    (buf, rnd,   strlen(rnd),   strlen(usr) + strlen(pwd));
+    SHA256  (buf, strlen(usr) + strlen(pwd) + strlen(rnd), dgt);   // SHA256 ([username | password | random])
 
     // Send challenge
     ZERO(&msg, sizeof(struct Message));
     msg.cmd = CHALLENGE;
-    memcpy(msg.data, random, strlen(random) + 1);
-    write (cs, (const void*) &msg, sizeof(msg.cmd) + strlen(msg.data) + 1);
+    memcpy(msg.data, rnd, strlen(rnd) + 1);
+    write (cdes, (const void*) &msg, sizeof(msg.cmd) + strlen(msg.data) + 1);
 
     // Receive response
     ZERO(&msg, sizeof(struct Message));
-    if (read (cs, (void*) &msg, sizeof(msg.cmd) + DATA_MAX_SIZE + 1) == 0)
+    if (read (cdes, (void*) &msg, sizeof(msg.cmd) + DATA_MAX_SIZE + 1) == 0)
         goto disconneted;
 
-    digest   [SHA256_DIGEST_LENGTH] = '\0';
+    dgt      [SHA256_DIGEST_LENGTH] = '\0';
     msg.data [SHA256_DIGEST_LENGTH] = '\0';
 
-    if(strcmp(digest, msg.data) == 0)
+    if(strcmp(dgt, msg.data) == 0)
         goto success;
     else
         goto failure;
@@ -232,95 +243,189 @@ io_err:
     fprintf(stdout, "[-] Couldn't open file\n");
     ZERO(&msg, sizeof(struct Message));
     msg.cmd = FAILURE;
-    write (cs, (const void*) &msg, sizeof(msg.cmd) + strlen(msg.data) + 1);
+    write (cdes, (const void*) &msg, sizeof(msg.cmd) + strlen(msg.data) + 1);
     return 0;
+
 failure:
     ZERO(&msg, sizeof(struct Message));
     msg.cmd = FAILURE;
-    write (cs, (const void*) &msg, sizeof(msg.cmd) + strlen(msg.data) + 1);
+    write (cdes, (const void*) &msg, sizeof(msg.cmd) + strlen(msg.data) + 1);
     return 0;
+
 success:
     // Register new client
     ZERO(&cin, sizeof(struct sockaddr_in));
-    cin.sin_addr.s_addr = inet_addr(cip);
-    regst_cs(cconn, cin, cs);
+    cin.sin_addr.s_addr = inet_addr(cadd);
+    regst_cs(cconn, cin, cdes);
     ZERO(&msg, sizeof(struct Message));
     msg.cmd = SUCCESS;
-    sprintf(msg.data, "%s %s", cip, mask);
-    write (cs, (const void*) &msg, sizeof(msg.cmd) + strlen(msg.data) + 1);
+    sprintf(msg.data, "%s %s", cadd, cmsk);
+    write (cdes, (const void*) &msg, sizeof(msg.cmd) + strlen(msg.data) + 1);
     return 1;
+
 disconneted:
     return -1;
-
 }
 
-
-static int
-is_ipv4 (char * buf) {
-    return ((buf[0] & 0xF0) >> 4) == 0x04;
-}
 static int 
-from_ascii_to_int (char *addr) {
+is_ipv4 (
+    char * pkt) { // Raw packet
+    return ((pkt[0] & 0xF0) >> 4) == 0x04;
+}
+
+static int 
+fatoi (
+    AD_t ad) { // The address to convert to IP as value
 
     unsigned int fst;
     unsigned int snd;
     unsigned int thd;
     unsigned int fth;
 
-    sscanf(addr, "%u.%u.%u.%u", &fst, &snd, &thd, &fth);
+    sscanf(ad, "%u.%u.%u.%u", &fst, &snd, &thd, &fth);
     return IP_ADDRESS_FROM_OCTETS(fst, snd, thd, fth);
 }
-static int
-belongs_to_net (unsigned int net, unsigned int netmask, unsigned int addr) {
 
-    if((net & netmask) == (addr & netmask)) 
+static void 
+fitoa (
+    IP_t  ip,   // The address as value
+    AD_t  ad) { // The buffer to fill with ASCII
+    sprintf(ad, "%u.%u.%u.%u",
+            (ip >> 24)  & 0xFF,
+            (ip >> 16)  & 0xFF,
+            (ip >> 8)   & 0xFF,
+            ip          & 0xFF);
+    return;
+}
+
+static int
+is_to_net (
+    IP_t net, 
+    IP_t msk, 
+    IP_t dst) {
+
+    if((net & msk) == (dst & msk)) 
         return 1;
     return 0;
 }
 
+// static void 
+// dump_hex_message (
+//     const char * buf, 
+//     int size) {
+
+//     for(int i=0; i<size; i++) {
+//         printf("0x%02x ", (unsigned char) buf[i]);
+//         if(i % 12 == 0 && i) {
+//             printf("\n");
+//         }
+//     }
+//     printf("\n");
+//     return;
+// }
+
+static int
+prefix (
+    AD_t id) { // The ASCII of a network ID
+
+    unsigned int n, m;
+    n   = fatoi(id);
+    m   = 0;
+    for(; n>0; n=n>>1)
+        if (n & 1)
+            m++;
+    return m;
+}
+
 static void 
-handle_cs (int *cs, struct sockaddr_in cin, char *net, char *netmask, int tun) {
+handle_cs (
+    int   *cdes,   // Client socket descriptor
+    Skt_t  cskt,   // Client socket object
+    AD_t   rnet,   // Remote network ID
+    AD_t   rmsk,   // Remote network mask
+    int    tdes) { // TUN interface descriptor
 
-    int n;
-    unsigned int dst;
-    char buf [MSS];
+    FILE *fdes;
+    int   fnd;
 
-    if ((n = read(*cs , buf, MSS)) == 0) {
+    int   nread;
+    char  buffr [MSS];
+    char  fline [INET6_ADDRSTRLEN * 2 + 1];
+    char  cadd  [INET_ADDRSTRLEN];
+    char  cmsk  [INET_ADDRSTRLEN];
+    char  tadd  [INET_ADDRSTRLEN];
+    unsigned int curr;
+
+    // Read from the client socket
+    if ((nread = read(*cdes , buffr, MSS)) == 0) { // If no payload, the client has exited the connection
+    
         fprintf(stdout, "   [+] End connection:");
-        fprintf(stdout, " - Addr: %s", inet_ntoa(cin.sin_addr));
-        fprintf(stdout, " - Port: %u\n", ntohs(cin.sin_port));
-        close(cs);
-        *cs = 0;
-    } else {
-        if(is_ipv4(buf)) { // If it is an IPv4 packet
-            dst = ntohl(*(unsigned int*)(buf + 16));
-            if(belongs_to_net(from_ascii_to_int(net), from_ascii_to_int(netmask), dst))
-                printf("FORWARD THIS!\n");
-                write (tun, (const void*) buf, n);
+        fprintf(stdout, " - Addr: %s",   inet_ntoa(cskt.sin_addr));
+        fprintf(stdout, " - Port: %u\n", ntohs(cskt.sin_port));
+        close(*cdes);         // Close the connection on the server side
+
+        // Cleanup the IP assignment file
+        if((fdes = fopen("server/ips.dat", "r")) == NULL)
+            goto io_err;
+
+        fitoa((unsigned int)cskt.sin_addr.s_addr, tadd);
+        fnd  = 0;
+        curr = 0;
+        while ((nread = read(fdes, fline, sizeof(fline))) > 0) {
+            if (sscanf(fline, "%s %s %d", cadd, cmsk, &fnd) == 3) {
+                if(strcmp(cadd, tadd) == 0) {
+                    // Move the file pointer to the beginning of the line
+                    lseek(fdes, curr, SEEK_SET);
+                    // Update the number in the same position
+                    dprintf(fdes, "%s %s %d", cadd, cmsk, 1);
+                    // Move the file pointer back to the end of the line
+                    lseek(fdes, nread - sizeof(int), SEEK_CUR);    
+                }
+            } else {
+                fprintf(stdout, "Invalid line format: %s", fline);
+            } // Move the file pointer to the next line
+            curr = lseek(fdes, 0, SEEK_CUR);
+        }
+    } else { // Otherwise, the client has sent something to forward
+        if(is_ipv4(buffr)) { // If this is an IPv4 packet
+            if(is_to_net(
+                fatoi(rnet), 
+                    fatoi(rmsk), 
+                        ntohl(*(unsigned int*)(buffr + 16)))) { // If it is for the remote network 
+                            write (tdes, (const void*) buffr, nread); // Write the TUN interface
+                }
         }
     }
     return;
-}
-static void 
-handle_tun (int tun, char *net, char *netmask, struct Connection *ccon) {
 
-    int n, i;
-    unsigned int src;
-    unsigned int dst;
+io_err:
+    fprintf(stdout, "[-] Couldn't open file\n");
+    return;
+
+}
+
+static void 
+handle_tun (
+    int    tdes,    // TUN interface descriptor
+    AD_t   rnet,    // Remote network
+    AD_t   rmsk,    // Remoet network mask
+    Con_t *ccon) {  // Client connection object
+
+    int nread, i;
+
+    IP_t src;
+    IP_t dst;
     char buf [MSS];
 
-    if ((n = read(tun , buf, MSS)) == 0) {
-        // TO DO
-        printf("Nothing\n");
-    } else {
-        if(is_ipv4(buf)) { // If it is an IPv4 packet
+    if ((nread = read(tdes , buf, MSS)) == 0) { /* TODO */} 
+    else {
+        if(is_ipv4(buf)) {
             src = ntohl(*(unsigned int*)(buf + 12));
             dst = *(unsigned int*)(buf + 16);
-            if(belongs_to_net(from_ascii_to_int(net), from_ascii_to_int(netmask), src)) {
+            if(is_to_net(fatoi(rnet), fatoi(rmsk), src)) {
                 for(i=0; i<MAX_CLIENTS; i++) {
                     if(ccon[i].cin.sin_addr.s_addr == dst) {
-                        printf("Sendind to %d\n", ccon[i].cs);
-                        printf("Sending %d vs %d\n", write (ccon[i].cs, (const void*) buf, n), n);
+                        write (ccon[i].cs, (const void*) buf, nread);
                         break;
                     }
                 }
@@ -330,8 +435,10 @@ handle_tun (int tun, char *net, char *netmask, struct Connection *ccon) {
     return;
 }
 
-static int
-tun_alloc(char *dev) {
+
+static int 
+tun_alloc(
+    char *dev) {
 
     struct ifreq ifr;
     int fd, err;
@@ -350,8 +457,14 @@ tun_alloc(char *dev) {
     strcpy(dev, ifr.ifr_name);
     return fd;
 }
+
 static int 
-add_att (void *req, void *attval, int attlen, int attype, int maxsz) {
+add_att (
+    void *req, 
+    void *attval, 
+    int   attlen, 
+    int   attype, 
+    int   maxsz) {
 
     // Cast the request
     struct nlmsghdr * header = (struct nlmsghdr *) req;
@@ -373,8 +486,12 @@ add_att (void *req, void *attval, int attlen, int attype, int maxsz) {
 
     return 0;
 }
+
 static int 
-set_addr (char *dev, char *addr, int prefx) {
+set_addr (
+    char *dev, 
+    char *addr, 
+    int prefx) {
 
     // Address attribute buffer
     struct in_addr iaddr;
@@ -465,8 +582,10 @@ set_addr (char *dev, char *addr, int prefx) {
     return 0;
 
 }
+
 static int 
-set_state (char *dev) {
+set_state (
+    char *dev) {
 
 
     // NETLINK request schema ....
@@ -522,8 +641,12 @@ set_state (char *dev) {
     close(fd);
     return 0;
 }
+
 static int 
-set_rtng (char *dev, char *addr, int prefx) {
+set_rtng (
+    char *dev, 
+    char *addr, 
+    int prefx) {
 
     // Address attribute buffer
     struct in_addr raddr;
@@ -588,19 +711,11 @@ set_rtng (char *dev, char *addr, int prefx) {
     return 0;
 }
 
-static int
-prefix (char *id) {
-
-    unsigned int n, m;
-    n   = from_ascii_to_int(id);
-    m   = 0;
-    for(; n>0; n=n>>1)
-        if (n & 1)
-            m++;
-    return m;
-}
-static struct in_addr
-gen_ips (char *id, char *mask) {
+// File configuaration
+static struct in_addr 
+gen_ips (
+    char *id, 
+    char *mask) {
 
     FILE *file;
     int i;
@@ -616,7 +731,7 @@ gen_ips (char *id, char *mask) {
         return ip;
     }
 
-    net = from_ascii_to_int(id);
+    net = fatoi(id);
     hosts = (1 << (32 - prefix(mask))) - 2;
     for(i=1; i<=hosts; i++) {
         in.s_addr = htonl(net) + htonl(i);
@@ -631,65 +746,73 @@ gen_ips (char *id, char *mask) {
     return ip;
 }
 
-int
-main (int argc, char **argv) {
+// Main
+int 
+main (
+    int argc, 
+    char **argv) {
 
-    int i;
-    int res;
-    int max;
-    
-    int cs;
-    int ss;
-    int len;
-    int n;
-    int in;
+    // Socket related variables
+    int  cs;
+    int  ss;
+    int  res;
 
+    // TUN related variables
     int  tun;
     char dev [] = "martina";
 
-    struct in_addr ip;
-    struct Connection  cconn [MAX_CLIENTS];
-    struct sockaddr_in cin;
-    char buf [1024];
+    // Select syscall stuff
+    Set_t  reads;
+    int    max;
 
-    fd_set readfds;
+    // Generic
+    int i;
+    int len;
+    
+    struct in_addr ip;
+    Skt_t  cin;
+    Con_t  cconn [MAX_CLIENTS];
 
     // <program_name> <pnet_id> <pmask> <rnet> <rmask>
     if(argc != 5) 
         goto args_error;
+
     fprintf(stdout, "[+] Private  Network ID: %s %s\n", argv[1], argv[2]);
     fprintf(stdout, "[+] Remote   Network ID: %s %s\n", argv[3], argv[4]);
+
+    ss = -1;
     if((ip.s_addr = gen_ips(argv[1], argv[2]).s_addr) == 0)
         goto end;
 
-    ss = start_service (VNP_PORT);
+    ss = start (VNP_PORT);
     if (ss < 0)
         exit(EXIT_FAILURE);
 
     // Setup TUN interface
     if((tun = tun_alloc(dev)) < 0)
         goto tun_error;
-    if((res = set_addr(dev, inet_ntoa(ip), 24)) < 0)
+    if((res = set_addr(dev, argv[1], prefix(argv[2]))) < 0)
         goto tun_error_config;
     if((res = set_state(dev)) < 0)
         goto tun_error_config;
 
-    len = sizeof (cin);
+    len = sizeof (struct sockaddr_in);
     ZERO(cconn, MAX_CLIENTS * sizeof(struct Connection));
 
     for(;;) {
 
-        FD_ZERO (&readfds);
-        FD_SET  (ss,  &readfds);
-        FD_SET  (tun, &readfds);
-        max = ss > tun ? ss : tun;
-        max = init_fds(cconn, max, &readfds);
-        res = select(max + 1, &readfds, NULL, NULL, NULL);
+        FD_ZERO (&reads);
+        FD_SET  (ss,  &reads);
+        FD_SET  (tun, &reads);
 
-        if (FD_ISSET(ss, &readfds)) {
+        max = ss > tun ? ss : tun;
+        max = init_fds(cconn, max, &reads);
+        res = select(max + 1, &reads, NULL, NULL, NULL);
+
+
+        if (FD_ISSET(ss, &reads)) {
 
             cs = accept (ss, (struct sockaddr *) &cin, &len);
-            printf("%d\n", cs);
             if (cs < 0) 
                 exit(EXIT_FAILURE);
 
@@ -697,26 +820,30 @@ main (int argc, char **argv) {
             fprintf(stdout, " - Addr: %s", inet_ntoa (cin.sin_addr));
             fprintf(stdout, " - Port: %u\n", ntohs(cin.sin_port));
 
-            if(client_authentication(cs, cconn) <= 0) {
+            if(auth(cs, cconn) <= 0) {
                 fprintf(stdout, "   [+] End connection:");
                 fprintf(stdout, " - Addr: %s", inet_ntoa (cin.sin_addr));
                 fprintf(stdout, " - Port: %u\n", ntohs(cin.sin_port));
                 close(cs);
             }
-        } else if (FD_ISSET(tun, &readfds)) {
+        } 
+
+        else if (FD_ISSET(tun, &reads)) {
             handle_tun(tun, argv[3], argv[4], cconn);
-        } else {
+        }
+        
+        else {
             for (i=0; i<MAX_CLIENTS; i++) {
-                if (FD_ISSET(cconn[i].cs, &readfds)) 
+                if (FD_ISSET(cconn[i].cs, &reads)) 
                     handle_cs(&cconn[i].cs, cconn[i].cin, argv[3], argv[4], tun);
             }
         }
     }
 
 end:
-    close(ss);
+    if(ss > 0)
+        close(ss);
     return 0;
-
 args_error:
     fprintf(stdout, "[-] Invalid arguments\n");
     return 0;    

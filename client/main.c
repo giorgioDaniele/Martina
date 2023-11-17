@@ -44,27 +44,29 @@
     ((fst << 24) + (snd << 16) + (thd << 8) + (fth))
 
 enum Command {
-    USERNAME, CHALLENGE, RESPONSE, FAILURE, SUCCESS
+    USERNAME, 
+    CHALLENGE, 
+    RESPONSE, 
+    FAILURE, 
+    SUCCESS
 };
+
 struct Message {
     enum Command cmd;
     char data [DATA_MAX_SIZE + 1];
 };
 
-static void
-dump_hex_message (const char * buf, int size) {
+typedef struct Connection  Con_t;
+typedef struct sockaddr_in Skt_t;
+typedef struct Message     Msg_t;
+typedef unsigned int       IP_t;
+typedef char*              AD_t;
 
-    for(int i=0; i<size; i++) {
-        printf("0x%02x ", (unsigned char) buf[i]);
-        if(i % 12 == 0 && i) {
-            printf("\n");
-        }
-    }
-    printf("\n");
-    return;
-}
+// Service related function
 static int 
-connect_server (char *host, int port) {
+connect_server (
+    char *host, 
+    int port) {
 
     int s;
     struct sockaddr_in sa;
@@ -100,8 +102,11 @@ sock_connecting:
     close (s);
     return -1;
 }
-static int
-tun_alloc(char *dev) {
+
+// TUN related functions
+static int 
+tun_alloc(
+    char *dev) {
 
     struct ifreq ifr;
     int fd, err;
@@ -120,8 +125,14 @@ tun_alloc(char *dev) {
     strcpy(dev, ifr.ifr_name);
     return fd;
 }
+
 static int 
-add_att (void *req, void *attval, int attlen, int attype, int maxsz) {
+add_att (
+    void *req, 
+    void *attval, 
+    int attlen, 
+    int attype, 
+    int maxsz) {
 
     // Cast the request
     struct nlmsghdr * header = (struct nlmsghdr *) req;
@@ -143,8 +154,12 @@ add_att (void *req, void *attval, int attlen, int attype, int maxsz) {
 
     return 0;
 }
+
 static int 
-set_addr (char *dev, char *addr, int prefx) {
+set_addr (
+    char *dev, 
+    char *addr, 
+    int prefx) {
 
     // Address attribute buffer
     struct in_addr iaddr;
@@ -235,8 +250,10 @@ set_addr (char *dev, char *addr, int prefx) {
     return 0;
 
 }
+
 static int 
-set_state (char *dev) {
+set_state (
+    char *dev) {
 
 
     // NETLINK request schema ....
@@ -292,8 +309,12 @@ set_state (char *dev) {
     close(fd);
     return 0;
 }
+
 static int 
-set_rtng (char *dev, char *addr, int prefx) {
+set_rtng (
+    char *dev, 
+    char *addr, 
+    int prefx) {
 
     // Address attribute buffer
     struct in_addr raddr;
@@ -358,33 +379,55 @@ set_rtng (char *dev, char *addr, int prefx) {
     return 0;
 }
 
-static int
-is_ipv4 (char * buf) {
-    return ((buf[0] & 0xF0) >> 4) == 0x04;
-}
+// Utility functions
 static int 
-from_ascii_to_int (char *addr) {
+is_ipv4 (
+    char * pkt) { // Raw packet
+    return ((pkt[0] & 0xF0) >> 4) == 0x04;
+}
+
+static int 
+fatoi (
+    AD_t ad) { // The address to convert to IP as value
 
     unsigned int fst;
     unsigned int snd;
     unsigned int thd;
     unsigned int fth;
 
-    sscanf(addr, "%u.%u.%u.%u", &fst, &snd, &thd, &fth);
+    sscanf(ad, "%u.%u.%u.%u", &fst, &snd, &thd, &fth);
     return IP_ADDRESS_FROM_OCTETS(fst, snd, thd, fth);
 }
-static int
-belongs_to_net (unsigned int net, unsigned int netmask, unsigned int addr) {
 
-    if((net & netmask) == (addr & netmask)) 
+static void 
+fitoa (
+    IP_t  ip,   // The address as value
+    AD_t  ad) { // The buffer to fill with ASCII
+    sprintf(ad, "%u.%u.%u.%u",
+            (ip >> 24)  & 0xFF,
+            (ip >> 16)  & 0xFF,
+            (ip >> 8)   & 0xFF,
+            ip          & 0xFF);
+    return;
+}
+
+static int
+is_to_net (
+    IP_t net, 
+    IP_t msk, 
+    IP_t dst) {
+
+    if((net & msk) == (dst & msk)) 
         return 1;
     return 0;
 }
+
 static int
-prefix (char *id) {
+prefix (
+    AD_t id) { // The ASCII of a network ID
 
     unsigned int n, m;
-    n   = from_ascii_to_int(id);
+    n   = fatoi(id);
     m   = 0;
     for(; n>0; n=n>>1)
         if (n & 1)
@@ -392,31 +435,51 @@ prefix (char *id) {
     return m;
 }
 
-int
-main (int argc, char **argv) {
+// static void 
+// dump_hex_message (
+//     const char * buf, 
+//     int size) {
 
-    int  cs, n;
+//     for(int i=0; i<size; i++) {
+//         printf("0x%02x ", (unsigned char) buf[i]);
+//         if(i % 12 == 0 && i) {
+//             printf("\n");
+//         }
+//     }
+//     printf("\n");
+//     return;
+// }
+
+// Main
+int main (int argc, char **argv) {
+
+    // Socket related variables
+    int  cs;
+    int  nb;
     int  res;
-    int  tun;
-    char dev [] = "martina";
-    struct Message msg;
 
+    // TUN related variables
+    int  tun;
+    char dev  [] = "martina";
+    char ip   [INET_ADDRSTRLEN];
+    char mask [INET_ADDRSTRLEN];
+    
+    char buf  [MSS];
+
+    // Select syscall stuff
     fd_set readfds;
     int    max;
-    char   buf [MSS];
 
-    unsigned int src;
-    unsigned int dst;
-
-    char rnet     [] = "192.168.200.0";
-    char rmask    [] = "255.255.255.0";
-    char ip      [INET_ADDRSTRLEN];
-    char mask    [INET_ADDRSTRLEN];
-
+    // Authentication stuff
+    struct Message msg;
     char username  [PASSWORD_SIZE + 1];
     char password  [USERNAME_SIZE + 1];
     char buffer    [USERNAME_SIZE + PASSWORD_SIZE + RANDOM_SIZE];
     char digest    [SHA256_DIGEST_LENGTH];
+
+    // <prog_name> <remote_network_id> <remote_network_mask> <server_ip>
+    if(argc != 4) 
+        goto args_error;
 
     fprintf (stdout, "#### Martina client ####\n");
     fprintf (stdout, "Enter your username: ");
@@ -424,7 +487,7 @@ main (int argc, char **argv) {
     fprintf (stdout, "Enter your password: ");
     fscanf  (stdin, "%s", password);
 
-    cs = connect_server ("10.0.0.2", VNP_PORT);
+    cs = connect_server (argv[3], VNP_PORT);
     if (cs < 0)
         exit(EXIT_FAILURE);
 
@@ -444,7 +507,7 @@ main (int argc, char **argv) {
     MOVE    (buffer, username, strlen(username), 0x00);
     MOVE    (buffer, password, strlen(password), strlen(username));
     MOVE    (buffer, msg.data, strlen(msg.data), strlen(username) + strlen(password));
-    SHA256  (buffer, strlen(username) + strlen(password) + strlen(msg.data), digest);   // SHA256 ([username | password | random])
+    SHA256  (buffer, strlen(username) + strlen(password) + strlen(msg.data), digest);
 
     // Send reponse
     ZERO(&msg, sizeof(struct Message));
@@ -468,7 +531,7 @@ main (int argc, char **argv) {
         goto tun_error_config;
     if((res = set_state(dev)) < 0)
         goto tun_error_config;
-    if((res = set_rtng(dev, rnet, 24)) < 0)
+    if((res = set_rtng(dev, argv[1], prefix(argv[2]))) < 0)
         goto tun_error_config; 
 
     printf("Client has been configured!\n");
@@ -478,30 +541,29 @@ main (int argc, char **argv) {
         FD_ZERO (&readfds);
         FD_SET  (cs,  &readfds);
         FD_SET  (tun, &readfds);
+
         max = cs > tun ? cs : tun;
-
         res = select(max + 1, &readfds, NULL, NULL, NULL);
-        if (FD_ISSET(tun, &readfds)) { // Receiving traffic from TUN interface
-            n = read (tun, (void*) &buf, MSS);
-            if(is_ipv4(buf)) { // If it is an IPv4 packet
-                dst = ntohl(*(unsigned int*)(buf + 16));
-                if(belongs_to_net(from_ascii_to_int(rnet), from_ascii_to_int(rmask), dst))
-                    write (cs, (const void*) buf, n); // Send to the VPN server
 
-            }
+        if (FD_ISSET(tun, &readfds)) {
+            nb = read (tun, (void*) &buf, MSS);
+            // If it is an IPv4 packet and it aims at the remote network, send it to the server
+            if(is_ipv4(buf) && is_to_net(fatoi(argv[1]), fatoi(argv[2]), ntohl(*(unsigned int*)(buf + 16))))
+                write (cs, (const void*) buf, nb); 
         }
-        if (FD_ISSET(cs, &readfds)) { // Receiving traffic from VPN server
-            n = read (cs, (void*) &buf, MSS);
-            if(is_ipv4(buf)) { // If it is an IPv4 packet
-                src = ntohl(*(unsigned int*)(buf + 12));
-                write (tun, (const void*) buf, n); // Send to the TUN interface
-            }
+        if (FD_ISSET(cs, &readfds)) {
+            nb = read (cs, (void*) &buf, MSS);
+            // If receiving somehting about an IPv4 packet, just forward it to the TUN interface
+            if(is_ipv4(buf))
+                write (tun, (const void*) buf, nb);
         }
     }
-
     close(cs);
     return 0;
 
+args_error:
+    fprintf(stdout, "[-] Invalid arguments\n");
+    return 0;  
 invalid_username:
     fprintf(stdout, "[-] Invalid username, %s does not exists\n", username);
     close(cs);
